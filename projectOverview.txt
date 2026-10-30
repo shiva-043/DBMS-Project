@@ -1,0 +1,287 @@
+# Railway Reservation Management System
+## Final Database Schema & Relationship Specification
+
+### 1. Project Configuration
+
+- Database: MySQL
+- Database management: phpMyAdmin
+- Backend: Core PHP
+- Frontend: HTML and CSS
+- Execution: Localhost (XAMPP)
+- Complexity: Basic student-level DBMS project
+
+### 2. Database Tables
+
+The database consists of exactly FIVE tables:
+
+1. users
+2. stations
+3. trains
+4. bookings
+5. passengers
+
+---
+
+### 3. Table Definitions
+
+#### TABLE 1: users
+
+Stores both regular user and admin account information.
+
+| Column | Data Type | Constraints |
+|---|---|---|
+| user_id | INT | PRIMARY KEY, AUTO_INCREMENT |
+| full_name | VARCHAR(100) | NOT NULL |
+| email | VARCHAR(150) | UNIQUE, NOT NULL |
+| password | VARCHAR(255) | NOT NULL |
+| phone | VARCHAR(15) | NULL allowed |
+| role | ENUM('USER','ADMIN') | NOT NULL, DEFAULT 'USER' |
+
+Rules:
+- Users can register through the website.
+- Public registration must always assign the USER role.
+- Admin accounts must be inserted manually through phpMyAdmin.
+- Passwords must be stored using PHP password_hash().
+- Login must use password_verify().
+
+#### TABLE 2: stations
+
+Stores railway station information.
+
+| Column | Data Type | Constraints |
+|---|---|---|
+| station_id | INT | PRIMARY KEY, AUTO_INCREMENT |
+| station_name | VARCHAR(100) | NOT NULL |
+| station_code | VARCHAR(10) | UNIQUE, NOT NULL |
+| city | VARCHAR(100) | NOT NULL |
+
+#### TABLE 3: trains
+
+Stores train information and fixed direct routes.
+
+| Column | Data Type | Constraints |
+|---|---|---|
+| train_id | INT | PRIMARY KEY, AUTO_INCREMENT |
+| train_number | VARCHAR(10) | UNIQUE, NOT NULL |
+| train_name | VARCHAR(100) | NOT NULL |
+| source_station_id | INT | FOREIGN KEY, NOT NULL |
+| destination_station_id | INT | FOREIGN KEY, NOT NULL |
+| departure_time | TIME | NOT NULL |
+| arrival_time | TIME | NOT NULL |
+| total_seats | INT | NOT NULL, CHECK (total_seats > 0) |
+| fare | DECIMAL(10,2) | NOT NULL, CHECK (fare >= 0) |
+
+Foreign keys:
+- source_station_id REFERENCES stations(station_id)
+- destination_station_id REFERENCES stations(station_id)
+
+Additional rules:
+- Source and destination stations cannot be identical.
+- Each train has one fixed source and one fixed destination.
+- All trains operate daily.
+- Trains have fixed departure and arrival times.
+- There are no intermediate stations.
+
+#### TABLE 4: bookings
+
+Stores booking details, PNR and cancellation status.
+
+| Column | Data Type | Constraints |
+|---|---|---|
+| booking_id | INT | PRIMARY KEY, AUTO_INCREMENT |
+| pnr | VARCHAR(15) | UNIQUE, NOT NULL |
+| user_id | INT | FOREIGN KEY, NOT NULL |
+| train_id | INT | FOREIGN KEY, NOT NULL |
+| journey_date | DATE | NOT NULL |
+| booking_date | DATETIME | NOT NULL |
+| fare_per_passenger | DECIMAL(10,2) | NOT NULL, CHECK (fare_per_passenger >= 0) |
+| booking_status | ENUM('CONFIRMED','CANCELLED') | NOT NULL, DEFAULT 'CONFIRMED' |
+
+Foreign keys:
+- user_id REFERENCES users(user_id)
+- train_id REFERENCES trains(train_id)
+
+Rules:
+- Every booking belongs to exactly one user.
+- Every booking refers to exactly one train.
+- PNR must be unique.
+- Fare per passenger is copied from the train's current fare at booking time.
+- Historical fare must not change if the admin updates the train fare.
+- Cancellation must update booking_status to CANCELLED.
+- Cancelled booking records must be retained.
+- Do not store passenger_count or total_fare because these can be calculated.
+
+Total fare calculation:
+
+total_fare = COUNT(passengers for booking) × fare_per_passenger
+
+#### TABLE 5: passengers
+
+Stores individual passenger details associated with a booking.
+
+| Column | Data Type | Constraints |
+|---|---|---|
+| passenger_id | INT | PRIMARY KEY, AUTO_INCREMENT |
+| booking_id | INT | FOREIGN KEY, NOT NULL |
+| passenger_name | VARCHAR(100) | NOT NULL |
+| age | INT | NOT NULL, CHECK (age >= 0) |
+| gender | ENUM('MALE','FEMALE','OTHER') | NOT NULL |
+
+Foreign key:
+- booking_id REFERENCES bookings(booking_id)
+
+Rules:
+- One booking can have multiple passengers.
+- Every passenger must belong to exactly one booking.
+- Every booking must contain at least one passenger.
+
+---
+
+### 4. Database Relationships
+
+| Parent Table | Child Table | Relationship | Foreign Key |
+|---|---|---|---|
+| users | bookings | One-to-Many (1:N) | bookings.user_id |
+| trains | bookings | One-to-Many (1:N) | bookings.train_id |
+| bookings | passengers | One-to-Many (1:N) | passengers.booking_id |
+| stations | trains | One-to-Many (1:N), source relationship | trains.source_station_id |
+| stations | trains | One-to-Many (1:N), destination relationship | trains.destination_station_id |
+
+### 5. ER Diagram Structure
+
+```text
+USERS
+  |
+  | 1:N
+  |
+BOOKINGS -------- N:1 -------- TRAINS
+  |                              |
+  | 1:N                          | N:1 (source)
+  |                              | N:1 (destination)
+PASSENGERS                    STATIONS
+```
+
+More precisely:
+
+```text
+USERS (1) -------- (N) BOOKINGS
+
+TRAINS (1) ------- (N) BOOKINGS
+
+BOOKINGS (1) ----- (N) PASSENGERS
+
+STATIONS (1) ----- (N) TRAINS [source_station_id]
+
+STATIONS (1) ----- (N) TRAINS [destination_station_id]
+```
+
+### 6. Seat Availability Logic
+
+Seat availability must be calculated separately for each train and journey date.
+
+Formula:
+
+Available Seats =
+Train Total Seats - Sum of Passengers in Confirmed Bookings
+
+SQL concept:
+
+```sql
+SELECT
+    t.total_seats -
+    COALESCE(SUM(p.passenger_id IS NOT NULL), 0)
+    AS available_seats
+FROM trains t
+LEFT JOIN bookings b
+    ON t.train_id = b.train_id
+    AND b.journey_date = ?
+    AND b.booking_status = 'CONFIRMED'
+LEFT JOIN passengers p
+    ON b.booking_id = p.booking_id
+WHERE t.train_id = ?
+GROUP BY t.train_id, t.total_seats;
+```
+
+Booking rules:
+- Reject booking if available seats are insufficient.
+- Cancelled bookings do not consume seats.
+- Perform availability checking and booking insertion in a database transaction.
+- Prevent concurrent bookings from exceeding train capacity.
+
+### 7. Normalization
+
+All five tables should satisfy 3NF.
+
+- 1NF: All columns contain atomic values. Passenger details are stored as individual records.
+- 2NF: No partial dependencies. Tables use single-column primary keys.
+- 3NF: No transitive dependencies. Station information is separated from train information.
+
+### 8. Project Scope Restrictions
+
+DO NOT implement:
+- Payment gateway
+- Seat selection
+- Waiting list
+- Intermediate stations
+- Live train tracking
+- Real railway API integration
+- Dynamic train scheduling
+- Multiple coach categories
+- Refund processing
+- Ticket modification
+
+### 9. Functional Requirements
+
+USER:
+- Register
+- Login and logout
+- Search trains by source and destination
+- View train details
+- Check seat availability for a journey date
+- Book tickets for one or more passengers
+- Receive a unique PNR
+- View booking history
+- Cancel confirmed bookings
+
+ADMIN:
+- Login
+- Add trains
+- Update train information
+- Delete trains that have no dependent bookings
+- Add stations
+- Update station information
+- View users
+- View all bookings
+
+### 10. Important Implementation Rules
+
+1. Use prepared statements for all database queries.
+2. Use PHP sessions for authentication.
+3. Verify passwords using password_verify().
+4. Hash passwords using password_hash() not required intially.
+5. Validate all inputs on the server side.
+6. Use transactions for booking and cancellation operations.
+7. Prevent users from accessing another user's booking records.
+8. Protect admin pages with role-based authorization.
+9. Do not allow users to assign themselves the ADMIN role.
+10. Preserve booking history after cancellation.
+11. Use foreign keys for referential integrity.
+12. Use appropriate indexes on frequently searched columns.
+
+### 11. Implementation Order
+
+1. Create database and five tables.
+2. Insert station sample records.
+3. Insert train sample records.
+4. Insert an admin account with a hashed password.
+5. Build database connection in PHP.
+6. Implement registration and login.
+7. Implement train search.
+8. Implement seat availability.
+9. Implement booking and PNR generation.
+10. Implement booking history.
+11. Implement cancellation.
+12. Implement admin management pages.
+13. Test all functionality.
+
+IMPORTANT: This schema is the approved source of truth. Do not add, remove or rename tables and columns without asking for approval first.
