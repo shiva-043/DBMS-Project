@@ -5,7 +5,28 @@ require_admin();
 $errors = [];
 $success = '';
 
-// Handle POST actions: add, edit, delete
+// Determine current form action from GET params
+$formAction = $_GET['action'] ?? '';  // 'add' or 'edit'
+$editStationId = (int)($_GET['station_id'] ?? 0);
+$editStation = null;
+
+// If editing, fetch the station record to pre-fill
+if ($formAction === 'edit' && $editStationId > 0) {
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM stations WHERE station_id = :id LIMIT 1");
+        $stmt->execute(['id' => $editStationId]);
+        $editStation = $stmt->fetch();
+        if (!$editStation) {
+            $errors[] = "Station not found.";
+            $formAction = '';
+        }
+    } catch (PDOException $e) {
+        $errors[] = "Error loading station for edit.";
+        $formAction = '';
+    }
+}
+
+// Handle POST actions: save or delete
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $action = $_POST['action'] ?? '';
@@ -91,14 +112,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                     $success = "Station '{$stationName}' created successfully.";
                 }
+                // Clear form on success
+                $formAction = '';
+                $editStation = null;
             } catch (PDOException $e) {
                 $errors[] = "Database operation failed: " . $e->getMessage();
+                // Keep form open with entered values
+                $editStation = [
+                    'station_id' => $stationId, 'station_name' => $stationName,
+                    'station_code' => $stationCode, 'city' => $city,
+                ];
+                $formAction = $stationId > 0 ? 'edit' : 'add';
             }
+        } else {
+            // Validation failed — keep form open with entered values
+            $editStation = [
+                'station_id' => $stationId, 'station_name' => $stationName,
+                'station_code' => $stationCode, 'city' => $city,
+            ];
+            $formAction = $stationId > 0 ? 'edit' : 'add';
         }
     }
 }
 
-// Fetch all stations
+// Fetch all stations for the table
 $stations = [];
 try {
     $stations = $pdo->query("SELECT * FROM stations ORDER BY station_name ASC")->fetchAll();
@@ -123,9 +160,11 @@ try {
                 <h1>Manage Stations</h1>
                 <p style="color: var(--color-muted);">Configure railway junction stops, station codes, and cities.</p>
             </div>
-            <button type="button" class="btn btn-primary" onclick="openAddStationModal()">
-                + Add Station
-            </button>
+            <?php if ($formAction !== 'add'): ?>
+                <a href="<?= BASE_PATH ?>/admin/manage-stations.php?action=add" class="btn btn-primary">
+                    + Add Station
+                </a>
+            <?php endif; ?>
         </div>
 
         <?php if (!empty($success)): ?>
@@ -138,6 +177,52 @@ try {
                     <div><?= htmlspecialchars($err) ?></div>
                 <?php endforeach; ?>
             </div>
+        <?php endif; ?>
+
+        <!-- Inline Add/Edit Form -->
+        <?php if ($formAction === 'add' || $formAction === 'edit'): ?>
+            <?php
+                $f = $editStation ?? [];
+                $isEdit = ($formAction === 'edit' && !empty($f['station_id']));
+            ?>
+            <section class="card" style="border-left: 3px solid var(--color-primary);">
+                <div class="card-header">
+                    <h3><?= $isEdit ? 'Edit Station ' . htmlspecialchars($f['station_code'] ?? '') : 'Add New Station' ?></h3>
+                    <a href="<?= BASE_PATH ?>/admin/manage-stations.php" class="btn btn-secondary btn-sm">Cancel</a>
+                </div>
+
+                <form action="<?= BASE_PATH ?>/admin/manage-stations.php" method="POST">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="action" value="save">
+                    <input type="hidden" name="station_id" value="<?= (int)($f['station_id'] ?? 0) ?>">
+
+                    <div class="form-group">
+                        <label for="station_code">Station Code <span style="color:var(--color-danger)">*</span></label>
+                        <input type="text" name="station_code" id="station_code" class="form-control" 
+                               maxlength="10" placeholder="e.g. NDLS" style="text-transform:uppercase;" required
+                               value="<?= htmlspecialchars($f['station_code'] ?? '') ?>">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="station_name">Station Full Name <span style="color:var(--color-danger)">*</span></label>
+                        <input type="text" name="station_name" id="station_name" class="form-control" 
+                               placeholder="e.g. New Delhi Railway Station" required
+                               value="<?= htmlspecialchars($f['station_name'] ?? '') ?>">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="city">City <span style="color:var(--color-danger)">*</span></label>
+                        <input type="text" name="city" id="city" class="form-control" 
+                               placeholder="e.g. New Delhi" required
+                               value="<?= htmlspecialchars($f['city'] ?? '') ?>">
+                    </div>
+
+                    <div style="margin-top: 10px; display: flex; gap: 10px; justify-content: flex-end;">
+                        <a href="<?= BASE_PATH ?>/admin/manage-stations.php" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary"><?= $isEdit ? 'Update Station' : 'Save Station' ?></button>
+                    </div>
+                </form>
+            </section>
         <?php endif; ?>
 
         <!-- Stations Table -->
@@ -166,12 +251,10 @@ try {
                                 <td><?= htmlspecialchars($st['city']) ?></td>
                                 <td>
                                     <div style="display:flex; gap: 8px;">
-                                        <button type="button" class="btn btn-secondary btn-sm" 
-                                                onclick='openEditStationModal(<?= json_encode($st) ?>)'>
+                                        <a href="<?= BASE_PATH ?>/admin/manage-stations.php?action=edit&station_id=<?= $st['station_id'] ?>" class="btn btn-secondary btn-sm">
                                             Edit
-                                        </button>
-                                        <form action="<?= BASE_PATH ?>/admin/manage-stations.php" method="POST" 
-                                              onsubmit="return confirm('Are you sure you want to delete station <?= htmlspecialchars($st['station_name']) ?>?');">
+                                        </a>
+                                        <form action="<?= BASE_PATH ?>/admin/manage-stations.php" method="POST">
                                             <?= csrf_field() ?>
                                             <input type="hidden" name="action" value="delete">
                                             <input type="hidden" name="station_id" value="<?= $st['station_id'] ?>">
@@ -186,73 +269,5 @@ try {
             </table>
         </div>
     </main>
-
-    <!-- Add/Edit Station Modal -->
-    <div class="modal-backdrop" id="stationModal">
-        <div class="modal-box">
-            <div class="modal-header">
-                <h3 id="stationModalTitle">Add Station</h3>
-                <button type="button" class="modal-close" onclick="closeStationModal()">&times;</button>
-            </div>
-            <form action="<?= BASE_PATH ?>/admin/manage-stations.php" method="POST" id="stationForm">
-                <?= csrf_field() ?>
-                <input type="hidden" name="action" value="save">
-                <input type="hidden" name="station_id" id="modalStationId" value="0">
-
-                <div class="modal-body">
-                    <div class="form-group">
-                        <label for="modalStationCode">Station Code <span style="color:var(--color-danger)">*</span></label>
-                        <input type="text" name="station_code" id="modalStationCode" class="form-control" 
-                               maxlength="10" placeholder="e.g. NDLS" style="text-transform:uppercase;" required>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="modalStationName">Station Full Name <span style="color:var(--color-danger)">*</span></label>
-                        <input type="text" name="station_name" id="modalStationName" class="form-control" 
-                               placeholder="e.g. New Delhi Railway Station" required>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="modalCity">City <span style="color:var(--color-danger)">*</span></label>
-                        <input type="text" name="city" id="modalCity" class="form-control" 
-                               placeholder="e.g. New Delhi" required>
-                    </div>
-                </div>
-
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="closeStationModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary">Save Station</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        const sModal = document.getElementById('stationModal');
-        const sForm = document.getElementById('stationForm');
-        const sTitle = document.getElementById('stationModalTitle');
-        const sIdInput = document.getElementById('modalStationId');
-
-        function openAddStationModal() {
-            sForm.reset();
-            sIdInput.value = '0';
-            sTitle.innerText = 'Add New Station';
-            sModal.classList.add('active');
-        }
-
-        function openEditStationModal(st) {
-            sForm.reset();
-            sIdInput.value = st.station_id;
-            document.getElementById('modalStationCode').value = st.station_code;
-            document.getElementById('modalStationName').value = st.station_name;
-            document.getElementById('modalCity').value = st.city;
-            sTitle.innerText = 'Edit Station ' + st.station_code;
-            sModal.classList.add('active');
-        }
-
-        function closeStationModal() {
-            sModal.classList.remove('active');
-        }
-    </script>
 </body>
 </html>

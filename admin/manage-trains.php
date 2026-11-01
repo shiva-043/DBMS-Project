@@ -13,7 +13,28 @@ try {
     $errors[] = "Error loading stations.";
 }
 
-// Handle POST actions: add, edit, delete
+// Determine current form action from GET params
+$formAction = $_GET['action'] ?? '';  // 'add' or 'edit'
+$editTrainId = (int)($_GET['train_id'] ?? 0);
+$editTrain = null;
+
+// If editing, fetch the train record to pre-fill
+if ($formAction === 'edit' && $editTrainId > 0) {
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM trains WHERE train_id = :train_id LIMIT 1");
+        $stmt->execute(['train_id' => $editTrainId]);
+        $editTrain = $stmt->fetch();
+        if (!$editTrain) {
+            $errors[] = "Train not found.";
+            $formAction = '';
+        }
+    } catch (PDOException $e) {
+        $errors[] = "Error loading train for edit.";
+        $formAction = '';
+    }
+}
+
+// Handle POST actions: save or delete
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     verify_csrf();
     $action = $_POST['action'] ?? '';
@@ -84,7 +105,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($errors)) {
             try {
                 if ($trainId > 0) {
-                    // Update
                     $stmt = $pdo->prepare("
                         UPDATE trains 
                         SET train_number = :train_num, train_name = :train_name,
@@ -106,7 +126,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                     $success = "Train #{$trainNum} updated successfully.";
                 } else {
-                    // Insert
                     $stmt = $pdo->prepare("
                         INSERT INTO trains (train_number, train_name, source_station_id, destination_station_id, departure_time, arrival_time, total_seats, fare)
                         VALUES (:train_num, :train_name, :source_id, :dest_id, :dep_time, :arr_time, :seats, :fare)
@@ -123,14 +142,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                     $success = "Train #{$trainNum} created successfully.";
                 }
+                // After successful save, clear the form action
+                $formAction = '';
+                $editTrain = null;
             } catch (PDOException $e) {
                 $errors[] = "Database operation failed: " . $e->getMessage();
+                // Keep form open on error
+                if ($trainId > 0) {
+                    $formAction = 'edit';
+                    $editTrain = [
+                        'train_id' => $trainId, 'train_number' => $trainNum, 'train_name' => $trainName,
+                        'source_station_id' => $sourceId, 'destination_station_id' => $destId,
+                        'departure_time' => $depTime, 'arrival_time' => $arrTime,
+                        'total_seats' => $seats, 'fare' => $fare,
+                    ];
+                } else {
+                    $formAction = 'add';
+                }
+            }
+        } else {
+            // Validation failed — keep form open with entered values
+            if ($trainId > 0) {
+                $formAction = 'edit';
+                $editTrain = [
+                    'train_id' => $trainId, 'train_number' => $trainNum, 'train_name' => $trainName,
+                    'source_station_id' => $sourceId, 'destination_station_id' => $destId,
+                    'departure_time' => $depTime, 'arrival_time' => $arrTime,
+                    'total_seats' => $seats, 'fare' => $fare,
+                ];
+            } else {
+                $formAction = 'add';
+                $editTrain = [
+                    'train_id' => 0, 'train_number' => $trainNum, 'train_name' => $trainName,
+                    'source_station_id' => $sourceId, 'destination_station_id' => $destId,
+                    'departure_time' => $depTime, 'arrival_time' => $arrTime,
+                    'total_seats' => $seats, 'fare' => $fare,
+                ];
             }
         }
     }
 }
 
-// Fetch all trains with station names
+// Fetch all trains with station names for the table
 $trains = [];
 try {
     $stmt = $pdo->query("
@@ -164,9 +217,11 @@ try {
                 <h1>Manage Trains</h1>
                 <p style="color: var(--color-muted);">Add, edit, or configure daily express trains and capacities.</p>
             </div>
-            <button type="button" class="btn btn-primary" onclick="openAddTrainModal()">
-                + Add Train
-            </button>
+            <?php if ($formAction !== 'add'): ?>
+                <a href="<?= BASE_PATH ?>/admin/manage-trains.php?action=add" class="btn btn-primary">
+                    + Add Train
+                </a>
+            <?php endif; ?>
         </div>
 
         <?php if (!empty($success)): ?>
@@ -179,6 +234,111 @@ try {
                     <div><?= htmlspecialchars($err) ?></div>
                 <?php endforeach; ?>
             </div>
+        <?php endif; ?>
+
+        <!-- Inline Add/Edit Form (shown when action=add or action=edit) -->
+        <?php if ($formAction === 'add' || $formAction === 'edit'): ?>
+            <?php
+                $f = $editTrain ?? [];
+                $isEdit = ($formAction === 'edit' && !empty($f['train_id']));
+            ?>
+            <section class="card" style="border-left: 3px solid var(--color-primary);">
+                <div class="card-header">
+                    <h3><?= $isEdit ? 'Edit Train #' . htmlspecialchars($f['train_number'] ?? '') : 'Add New Train' ?></h3>
+                    <a href="<?= BASE_PATH ?>/admin/manage-trains.php" class="btn btn-secondary btn-sm">Cancel</a>
+                </div>
+
+                <form action="<?= BASE_PATH ?>/admin/manage-trains.php" method="POST">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="action" value="save">
+                    <input type="hidden" name="train_id" value="<?= (int)($f['train_id'] ?? 0) ?>">
+
+                    <div class="form-row">
+                        <div class="form-col">
+                            <div class="form-group">
+                                <label for="train_number">Train Number <span style="color:var(--color-danger)">*</span></label>
+                                <input type="text" name="train_number" id="train_number" class="form-control" required 
+                                       placeholder="e.g. 12951" value="<?= htmlspecialchars($f['train_number'] ?? '') ?>">
+                            </div>
+                        </div>
+                        <div class="form-col">
+                            <div class="form-group">
+                                <label for="train_name">Train Name <span style="color:var(--color-danger)">*</span></label>
+                                <input type="text" name="train_name" id="train_name" class="form-control" required 
+                                       placeholder="e.g. Rajdhani Express" value="<?= htmlspecialchars($f['train_name'] ?? '') ?>">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-col">
+                            <div class="form-group">
+                                <label for="source_station_id">Source Station <span style="color:var(--color-danger)">*</span></label>
+                                <select name="source_station_id" id="source_station_id" class="form-control" required>
+                                    <option value="">-- Select Source --</option>
+                                    <?php foreach ($stations as $st): ?>
+                                        <option value="<?= $st['station_id'] ?>" <?= ((int)($f['source_station_id'] ?? 0) === (int)$st['station_id']) ? 'selected' : '' ?>>
+                                            <?= htmlspecialchars($st['station_name']) ?> (<?= htmlspecialchars($st['station_code']) ?>)
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-col">
+                            <div class="form-group">
+                                <label for="destination_station_id">Destination Station <span style="color:var(--color-danger)">*</span></label>
+                                <select name="destination_station_id" id="destination_station_id" class="form-control" required>
+                                    <option value="">-- Select Destination --</option>
+                                    <?php foreach ($stations as $st): ?>
+                                        <option value="<?= $st['station_id'] ?>" <?= ((int)($f['destination_station_id'] ?? 0) === (int)$st['station_id']) ? 'selected' : '' ?>>
+                                            <?= htmlspecialchars($st['station_name']) ?> (<?= htmlspecialchars($st['station_code']) ?>)
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-col">
+                            <div class="form-group">
+                                <label for="departure_time">Departure Time <span style="color:var(--color-danger)">*</span></label>
+                                <input type="time" name="departure_time" id="departure_time" class="form-control" required 
+                                       value="<?= htmlspecialchars($f['departure_time'] ?? '') ?>">
+                            </div>
+                        </div>
+                        <div class="form-col">
+                            <div class="form-group">
+                                <label for="arrival_time">Arrival Time <span style="color:var(--color-danger)">*</span></label>
+                                <input type="time" name="arrival_time" id="arrival_time" class="form-control" required 
+                                       value="<?= htmlspecialchars($f['arrival_time'] ?? '') ?>">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-col">
+                            <div class="form-group">
+                                <label for="total_seats">Total Seats Capacity <span style="color:var(--color-danger)">*</span></label>
+                                <input type="number" name="total_seats" id="total_seats" class="form-control" min="1" required 
+                                       placeholder="e.g. 60" value="<?= htmlspecialchars($f['total_seats'] ?? '') ?>">
+                            </div>
+                        </div>
+                        <div class="form-col">
+                            <div class="form-group">
+                                <label for="fare">Fare per Passenger (₹) <span style="color:var(--color-danger)">*</span></label>
+                                <input type="number" step="0.01" name="fare" id="fare" class="form-control" min="0" required 
+                                       placeholder="e.g. 1850.00" value="<?= htmlspecialchars($f['fare'] ?? '') ?>">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 10px; display: flex; gap: 10px; justify-content: flex-end;">
+                        <a href="<?= BASE_PATH ?>/admin/manage-trains.php" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary"><?= $isEdit ? 'Update Train' : 'Save Train' ?></button>
+                    </div>
+                </form>
+            </section>
         <?php endif; ?>
 
         <!-- Trains Data Table -->
@@ -215,12 +375,10 @@ try {
                                 <td>₹<?= number_format($tr['fare'], 2) ?></td>
                                 <td>
                                     <div style="display:flex; gap: 8px;">
-                                        <button type="button" class="btn btn-secondary btn-sm" 
-                                                onclick='openEditTrainModal(<?= json_encode($tr) ?>)'>
+                                        <a href="<?= BASE_PATH ?>/admin/manage-trains.php?action=edit&train_id=<?= $tr['train_id'] ?>" class="btn btn-secondary btn-sm">
                                             Edit
-                                        </button>
-                                        <form action="<?= BASE_PATH ?>/admin/manage-trains.php" method="POST" 
-                                              onsubmit="return confirm('Are you sure you want to delete Train <?= htmlspecialchars($tr['train_number']) ?>?');">
+                                        </a>
+                                        <form action="<?= BASE_PATH ?>/admin/manage-trains.php" method="POST">
                                             <?= csrf_field() ?>
                                             <input type="hidden" name="action" value="delete">
                                             <input type="hidden" name="train_id" value="<?= $tr['train_id'] ?>">
@@ -235,144 +393,5 @@ try {
             </table>
         </div>
     </main>
-
-    <!-- Add/Edit Train Modal -->
-    <div class="modal-backdrop" id="trainModal">
-        <div class="modal-box">
-            <div class="modal-header">
-                <h3 id="modalTitle">Add Train</h3>
-                <button type="button" class="modal-close" onclick="closeTrainModal()">&times;</button>
-            </div>
-            <form action="<?= BASE_PATH ?>/admin/manage-trains.php" method="POST" id="trainForm">
-                <?= csrf_field() ?>
-                <input type="hidden" name="action" value="save">
-                <input type="hidden" name="train_id" id="modalTrainId" value="0">
-
-                <div class="modal-body">
-                    <div class="form-row">
-                        <div class="form-col">
-                            <div class="form-group">
-                                <label for="modalTrainNumber">Train Number <span style="color:var(--color-danger)">*</span></label>
-                                <input type="text" name="train_number" id="modalTrainNumber" class="form-control" required placeholder="e.g. 12951">
-                            </div>
-                        </div>
-                        <div class="form-col">
-                            <div class="form-group">
-                                <label for="modalTrainName">Train Name <span style="color:var(--color-danger)">*</span></label>
-                                <input type="text" name="train_name" id="modalTrainName" class="form-control" required placeholder="e.g. Rajdhani Express">
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-col">
-                            <div class="form-group">
-                                <label for="modalSourceId">Source Station <span style="color:var(--color-danger)">*</span></label>
-                                <select name="source_station_id" id="modalSourceId" class="form-control" required>
-                                    <option value="">-- Select Source --</option>
-                                    <?php foreach ($stations as $st): ?>
-                                        <option value="<?= $st['station_id'] ?>">
-                                            <?= htmlspecialchars($st['station_name']) ?> (<?= htmlspecialchars($st['station_code']) ?>)
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="form-col">
-                            <div class="form-group">
-                                <label for="modalDestId">Destination Station <span style="color:var(--color-danger)">*</span></label>
-                                <select name="destination_station_id" id="modalDestId" class="form-control" required>
-                                    <option value="">-- Select Destination --</option>
-                                    <?php foreach ($stations as $st): ?>
-                                        <option value="<?= $st['station_id'] ?>">
-                                            <?= htmlspecialchars($st['station_name']) ?> (<?= htmlspecialchars($st['station_code']) ?>)
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-col">
-                            <div class="form-group">
-                                <label for="modalDepTime">Departure Time <span style="color:var(--color-danger)">*</span></label>
-                                <input type="time" name="departure_time" id="modalDepTime" class="form-control" required>
-                            </div>
-                        </div>
-                        <div class="form-col">
-                            <div class="form-group">
-                                <label for="modalArrTime">Arrival Time <span style="color:var(--color-danger)">*</span></label>
-                                <input type="time" name="arrival_time" id="modalArrTime" class="form-control" required>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="form-row">
-                        <div class="form-col">
-                            <div class="form-group">
-                                <label for="modalSeats">Total Seats Capacity <span style="color:var(--color-danger)">*</span></label>
-                                <input type="number" name="total_seats" id="modalSeats" class="form-control" min="1" required placeholder="e.g. 60">
-                            </div>
-                        </div>
-                        <div class="form-col">
-                            <div class="form-group">
-                                <label for="modalFare">Fare per Passenger (₹) <span style="color:var(--color-danger)">*</span></label>
-                                <input type="number" step="0.01" name="fare" id="modalFare" class="form-control" min="0" required placeholder="e.g. 1850.00">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="closeTrainModal()">Cancel</button>
-                    <button type="submit" class="btn btn-primary" id="modalSubmitBtn">Save Train</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        const modal = document.getElementById('trainModal');
-        const form = document.getElementById('trainForm');
-        const title = document.getElementById('modalTitle');
-        const trainIdInput = document.getElementById('modalTrainId');
-
-        function openAddTrainModal() {
-            form.reset();
-            trainIdInput.value = '0';
-            title.innerText = 'Add New Train';
-            modal.classList.add('active');
-        }
-
-        function openEditTrainModal(tr) {
-            form.reset();
-            trainIdInput.value = tr.train_id;
-            document.getElementById('modalTrainNumber').value = tr.train_number;
-            document.getElementById('modalTrainName').value = tr.train_name;
-            document.getElementById('modalSourceId').value = tr.source_station_id;
-            document.getElementById('modalDestId').value = tr.destination_station_id;
-            document.getElementById('modalDepTime').value = tr.departure_time;
-            document.getElementById('modalArrTime').value = tr.arrival_time;
-            document.getElementById('modalSeats').value = tr.total_seats;
-            document.getElementById('modalFare').value = tr.fare;
-            title.innerText = 'Edit Train #' + tr.train_number;
-            modal.classList.add('active');
-        }
-
-        function closeTrainModal() {
-            modal.classList.remove('active');
-        }
-
-        // Validate stations not identical on form submission
-        form.addEventListener('submit', function(e) {
-            const src = document.getElementById('modalSourceId').value;
-            const dst = document.getElementById('modalDestId').value;
-            if (src && dst && src === dst) {
-                e.preventDefault();
-                alert('Source station and Destination station cannot be the same.');
-            }
-        });
-    </script>
 </body>
 </html>

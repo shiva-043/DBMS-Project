@@ -153,16 +153,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </section>
     </main>
 
-    <script>
-        // Client-side quick validation for matching stations
-        document.getElementById('searchForm').addEventListener('submit', function(e) {
-            const src = document.getElementById('source_station_id').value;
-            const dst = document.getElementById('destination_station_id').value;
-            if (src && dst && src === dst) {
-                e.preventDefault();
-                alert('Source station and Destination station cannot be the same.');
-            }
-        });
-    </script>
+
 </body>
 </html>

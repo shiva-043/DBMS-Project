@@ -17,11 +17,10 @@ Build the RailReserve Railway Reservation Management System using this document 
 - Core PHP
 - MySQL
 - PHP sessions
-- Plain/vanilla JavaScript only where a small amount of browser-side interaction is required (for example, opening a modal or adding passenger input rows).
 
 ### Do not use
 
-- React, Vue, Angular, Node.js, Laravel, or other application frameworks.
+-JS, React, Vue, Angular, Node.js, Laravel, or other application frameworks.
 - Bootstrap, Tailwind, or other CSS frameworks.
 - External UI libraries or icon libraries.
 - External fonts or Google Fonts.

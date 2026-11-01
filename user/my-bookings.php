@@ -195,8 +195,7 @@ try {
                                 </td>
                                 <?php if ($filter === 'CONFIRMED'): ?>
                                     <td class="no-print">
-                                        <form action="<?= BASE_PATH ?>/user/my-bookings.php" method="POST" 
-                                              onsubmit="return confirm('Are you sure you want to cancel booking PNR <?= htmlspecialchars($b['pnr']) ?>? This action cannot be reversed.');">
+                                        <form action="<?= BASE_PATH ?>/user/my-bookings.php" method="POST">
                                             <?= csrf_field() ?>
                                             <input type="hidden" name="action" value="cancel">
                                             <input type="hidden" name="booking_id" value="<?= $b['booking_id'] ?>">

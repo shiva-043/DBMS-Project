@@ -17,6 +17,8 @@ if ($date < date('Y-m-d')) {
 }
 
 // Fetch train details
+$train = null;
+$availableSeats = 0;
 try {
     $stmt = $pdo->prepare("
         SELECT t.*, 
@@ -41,131 +43,168 @@ try {
     $errors[] = "Database error while fetching train information.";
 }
 
-// Process Booking Submission
+// Determine passenger count and preserved data
+$maxPassengers = min($availableSeats, 6);
+$passengerCount = 1;
+$savedNames   = [];
+$savedAges    = [];
+$savedGenders = [];
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    verify_csrf();
+    $savedNames   = $_POST['passenger_name'] ?? [];
+    $savedAges    = $_POST['age'] ?? [];
+    $savedGenders = $_POST['gender'] ?? [];
 
-    $names   = $_POST['passenger_name'] ?? [];
-    $ages    = $_POST['age'] ?? [];
-    $genders = $_POST['gender'] ?? [];
-
-    $passengers = [];
-    $passengerCount = count($names);
-
-    if ($passengerCount < 1) {
-        $errors[] = "At least one passenger is required to make a booking.";
-    } elseif ($passengerCount > 6) {
-        $errors[] = "A maximum of 6 passengers can be booked per ticket.";
+    // Handle Add Passenger button
+    if (isset($_POST['add_passenger'])) {
+        $passengerCount = count($savedNames) + 1;
+        if ($passengerCount > $maxPassengers) {
+            $passengerCount = $maxPassengers;
+            $errors[] = "Cannot add more passengers. Maximum {$maxPassengers} allowed based on available seats.";
+        }
     }
-
-    // Validate each passenger field
-    for ($i = 0; $i < $passengerCount; $i++) {
-        $pName   = trim($names[$i] ?? '');
-        $pAge    = trim($ages[$i] ?? '');
-        $pGender = trim($genders[$i] ?? '');
-
-        if (empty($pName)) {
-            $errors[] = "Passenger #" . ($i + 1) . ": Name is required.";
+    // Handle Remove Passenger button
+    elseif (isset($_POST['remove_passenger'])) {
+        $removeIdx = (int)$_POST['remove_passenger'];
+        if ($removeIdx >= 0 && $removeIdx < count($savedNames)) {
+            array_splice($savedNames, $removeIdx, 1);
+            array_splice($savedAges, $removeIdx, 1);
+            array_splice($savedGenders, $removeIdx, 1);
         }
-        if ($pAge === '' || !is_numeric($pAge) || (int)$pAge < 0 || (int)$pAge > 120) {
-            $errors[] = "Passenger #" . ($i + 1) . ": Please enter a valid age (0 - 120).";
-        }
-        if (!in_array($pGender, ['MALE', 'FEMALE', 'OTHER'])) {
-            $errors[] = "Passenger #" . ($i + 1) . ": Please select a valid gender.";
-        }
-
-        $passengers[] = [
-            'name'   => $pName,
-            'age'    => (int)$pAge,
-            'gender' => $pGender
-        ];
+        $passengerCount = max(1, count($savedNames));
     }
+    // Handle Confirm Booking submission
+    elseif (isset($_POST['confirm_booking'])) {
+        verify_csrf();
 
-    if (empty($errors)) {
-        try {
-            // Concurrency-safe transaction with row-level lock
-            $pdo->beginTransaction();
+        $passengerCount = count($savedNames);
+        $passengers = [];
 
-            // Lock train record for update
-            $lockStmt = $pdo->prepare("SELECT total_seats, fare FROM trains WHERE train_id = :train_id FOR UPDATE");
-            $lockStmt->execute(['train_id' => $trainId]);
-            $lockedTrain = $lockStmt->fetch();
+        if ($passengerCount < 1) {
+            $errors[] = "At least one passenger is required to make a booking.";
+        } elseif ($passengerCount > $maxPassengers) {
+            $errors[] = "Cannot book more passengers than available capacity.";
+        }
 
-            if (!$lockedTrain) {
-                throw new Exception("Train not found.");
+        // Validate each passenger field
+        for ($i = 0; $i < $passengerCount; $i++) {
+            $pName   = trim($savedNames[$i] ?? '');
+            $pAge    = trim($savedAges[$i] ?? '');
+            $pGender = trim($savedGenders[$i] ?? '');
+
+            if (empty($pName)) {
+                $errors[] = "Passenger #" . ($i + 1) . ": Name is required.";
+            }
+            if ($pAge === '' || !is_numeric($pAge) || (int)$pAge < 0 || (int)$pAge > 120) {
+                $errors[] = "Passenger #" . ($i + 1) . ": Please enter a valid age (0 - 120).";
+            }
+            if (!in_array($pGender, ['MALE', 'FEMALE', 'OTHER'])) {
+                $errors[] = "Passenger #" . ($i + 1) . ": Please select a valid gender.";
             }
 
-            // Recalculate confirmed bookings capacity under lock
-            $countStmt = $pdo->prepare("
-                SELECT COUNT(p.passenger_id) AS booked_count
-                FROM bookings b
-                JOIN passengers p ON b.booking_id = p.booking_id
-                WHERE b.train_id = :train_id 
-                  AND b.journey_date = :journey_date 
-                  AND b.booking_status = 'CONFIRMED'
-            ");
-            $countStmt->execute([
-                'train_id'     => $trainId,
-                'journey_date' => $date
-            ]);
-            $bookedSeats = (int)$countStmt->fetchColumn();
-            $currentAvailable = $lockedTrain['total_seats'] - $bookedSeats;
+            $passengers[] = [
+                'name'   => $pName,
+                'age'    => (int)$pAge,
+                'gender' => $pGender
+            ];
+        }
 
-            if ($passengerCount > $currentAvailable) {
-                $pdo->rollBack();
-                $errors[] = "Insufficient seats available. Only {$currentAvailable} seat(s) remain.";
-            } else {
-                // Generate Unique PNR
-                $pnr = generate_pnr($pdo);
+        if (empty($errors)) {
+            try {
+                // Concurrency-safe transaction with row-level lock
+                $pdo->beginTransaction();
 
-                // Insert booking record (snapshots the current train fare)
-                $bStmt = $pdo->prepare("
-                    INSERT INTO bookings (pnr, user_id, train_id, journey_date, booking_date, fare_per_passenger, booking_status)
-                    VALUES (:pnr, :user_id, :train_id, :journey_date, NOW(), :fare, 'CONFIRMED')
-                ");
-                $bStmt->execute([
-                    'pnr'          => $pnr,
-                    'user_id'      => $_SESSION['user_id'],
-                    'train_id'     => $trainId,
-                    'journey_date' => $date,
-                    'fare'         => $lockedTrain['fare']
-                ]);
-                $bookingId = (int)$pdo->lastInsertId();
+                // Lock train record for update
+                $lockStmt = $pdo->prepare("SELECT total_seats, fare FROM trains WHERE train_id = :train_id FOR UPDATE");
+                $lockStmt->execute(['train_id' => $trainId]);
+                $lockedTrain = $lockStmt->fetch();
 
-                // Insert passenger rows
-                $pStmt = $pdo->prepare("
-                    INSERT INTO passengers (booking_id, passenger_name, age, gender)
-                    VALUES (:booking_id, :passenger_name, :age, :gender)
-                ");
-                foreach ($passengers as $p) {
-                    $pStmt->execute([
-                        'booking_id'     => $bookingId,
-                        'passenger_name' => $p['name'],
-                        'age'            => $p['age'],
-                        'gender'         => $p['gender']
-                    ]);
+                if (!$lockedTrain) {
+                    throw new Exception("Train not found.");
                 }
 
-                // Commit the entire atomic unit
-                $pdo->commit();
+                // Recalculate confirmed bookings capacity under lock
+                $countStmt = $pdo->prepare("
+                    SELECT COUNT(p.passenger_id) AS booked_count
+                    FROM bookings b
+                    JOIN passengers p ON b.booking_id = p.booking_id
+                    WHERE b.train_id = :train_id 
+                      AND b.journey_date = :journey_date 
+                      AND b.booking_status = 'CONFIRMED'
+                ");
+                $countStmt->execute([
+                    'train_id'     => $trainId,
+                    'journey_date' => $date
+                ]);
+                $bookedSeats = (int)$countStmt->fetchColumn();
+                $currentAvailable = $lockedTrain['total_seats'] - $bookedSeats;
 
-                // Store one-time confirmation context in session
-                $_SESSION['booking_confirmation'] = [
-                    'booking_id' => $bookingId,
-                    'pnr'        => $pnr
-                ];
+                if ($passengerCount > $currentAvailable) {
+                    $pdo->rollBack();
+                    $errors[] = "Insufficient seats available. Only {$currentAvailable} seat(s) remain.";
+                } else {
+                    // Generate Unique PNR
+                    $pnr = generate_pnr($pdo);
 
-                header("Location: " . BASE_PATH . "/user/booking-confirmation.php");
-                exit;
+                    // Insert booking record (snapshots the current train fare)
+                    $bStmt = $pdo->prepare("
+                        INSERT INTO bookings (pnr, user_id, train_id, journey_date, booking_date, fare_per_passenger, booking_status)
+                        VALUES (:pnr, :user_id, :train_id, :journey_date, NOW(), :fare, 'CONFIRMED')
+                    ");
+                    $bStmt->execute([
+                        'pnr'          => $pnr,
+                        'user_id'      => $_SESSION['user_id'],
+                        'train_id'     => $trainId,
+                        'journey_date' => $date,
+                        'fare'         => $lockedTrain['fare']
+                    ]);
+                    $bookingId = (int)$pdo->lastInsertId();
+
+                    // Insert passenger rows
+                    $pStmt = $pdo->prepare("
+                        INSERT INTO passengers (booking_id, passenger_name, age, gender)
+                        VALUES (:booking_id, :passenger_name, :age, :gender)
+                    ");
+                    foreach ($passengers as $p) {
+                        $pStmt->execute([
+                            'booking_id'     => $bookingId,
+                            'passenger_name' => $p['name'],
+                            'age'            => $p['age'],
+                            'gender'         => $p['gender']
+                        ]);
+                    }
+
+                    // Commit the entire atomic unit
+                    $pdo->commit();
+
+                    // Store one-time confirmation context in session
+                    $_SESSION['booking_confirmation'] = [
+                        'booking_id' => $bookingId,
+                        'pnr'        => $pnr
+                    ];
+
+                    header("Location: " . BASE_PATH . "/user/booking-confirmation.php");
+                    exit;
+                }
+            } catch (Exception $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                $errors[] = "Booking could not be completed: " . $e->getMessage();
             }
-        } catch (Exception $e) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            $errors[] = "Booking could not be completed: " . $e->getMessage();
         }
+    } else {
+        // Regular page load from POST (shouldn't happen, but handle gracefully)
+        $passengerCount = count($savedNames);
+        if ($passengerCount < 1) $passengerCount = 1;
     }
-}
+} 
+
+// Ensure passenger count is at least 1
+if ($passengerCount < 1) $passengerCount = 1;
+
+// Calculate fare for display
+$totalFare = $passengerCount * (float)$train['fare'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -218,7 +257,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </div>
                 <div class="ticket-item">
                     Fare per Passenger
-                    <strong>₹<span id="farePerPassenger"><?= number_format($train['fare'], 2, '.', '') ?></span></strong>
+                    <strong>₹<?= number_format($train['fare'], 2) ?></strong>
                 </div>
                 <div class="ticket-item">
                     Available Seats
@@ -232,137 +271,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <!-- Booking Form -->
         <section class="card">
             <div class="card-header">
-                <h3>Passenger Details</h3>
-                <button type="button" id="addPassengerBtn" class="btn btn-secondary btn-sm" <?= $availableSeats <= 1 ? 'disabled' : '' ?>>
-                    + Add Passenger
-                </button>
+                <h3>Passenger Details (<?= $passengerCount ?>)</h3>
             </div>
 
-            <form action="<?= BASE_PATH ?>/user/book-ticket.php" method="POST" id="bookingForm">
+            <form action="<?= BASE_PATH ?>/user/book-ticket.php" method="POST">
                 <?= csrf_field() ?>
                 <input type="hidden" name="train_id" value="<?= $trainId ?>">
                 <input type="hidden" name="journey_date" value="<?= htmlspecialchars($date) ?>">
 
-                <div id="passengerContainer">
-                    <!-- Default Passenger 1 -->
-                    <div class="passenger-row" id="row-0">
+                <?php for ($i = 0; $i < $passengerCount; $i++): ?>
+                    <div class="passenger-row">
                         <div style="flex: 2;">
-                            <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Passenger 1 Full Name</label>
-                            <input type="text" name="passenger_name[]" class="form-control" placeholder="Full Name" required>
+                            <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Passenger <?= $i + 1 ?> Full Name</label>
+                            <input type="text" name="passenger_name[]" class="form-control" placeholder="Full Name" 
+                                   value="<?= htmlspecialchars($savedNames[$i] ?? '') ?>" required>
                         </div>
                         <div style="flex: 1;">
                             <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Age</label>
-                            <input type="number" name="age[]" class="form-control" placeholder="Age" min="1" max="120" required>
+                            <input type="number" name="age[]" class="form-control" placeholder="Age" min="1" max="120" 
+                                   value="<?= htmlspecialchars($savedAges[$i] ?? '') ?>" required>
                         </div>
                         <div style="flex: 1.2;">
                             <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Gender</label>
                             <select name="gender[]" class="form-control" required>
-                                <option value="MALE">Male</option>
-                                <option value="FEMALE">Female</option>
-                                <option value="OTHER">Other</option>
+                                <option value="MALE" <?= (($savedGenders[$i] ?? '') === 'MALE') ? 'selected' : '' ?>>Male</option>
+                                <option value="FEMALE" <?= (($savedGenders[$i] ?? '') === 'FEMALE') ? 'selected' : '' ?>>Female</option>
+                                <option value="OTHER" <?= (($savedGenders[$i] ?? '') === 'OTHER') ? 'selected' : '' ?>>Other</option>
                             </select>
                         </div>
                         <div>
-                            <!-- Cannot remove first passenger -->
-                            <button type="button" class="btn btn-secondary btn-sm" disabled style="opacity: 0.3;">&times;</button>
+                            <?php if ($i > 0): ?>
+                                <button type="submit" name="remove_passenger" value="<?= $i ?>" formnovalidate class="btn btn-danger btn-sm" title="Remove">&times;</button>
+                            <?php else: ?>
+                                <button type="button" class="btn btn-secondary btn-sm" disabled style="opacity: 0.3;">&times;</button>
+                            <?php endif; ?>
                         </div>
                     </div>
+                <?php endfor; ?>
+
+                <!-- Add Passenger Button -->
+                <div style="margin-bottom: 20px;">
+                    <?php if ($passengerCount < $maxPassengers): ?>
+                        <button type="submit" name="add_passenger" value="1" formnovalidate class="btn btn-secondary btn-sm">
+                            + Add Passenger
+                        </button>
+                    <?php else: ?>
+                        <button type="button" class="btn btn-secondary btn-sm" disabled>
+                            + Add Passenger (Max reached)
+                        </button>
+                    <?php endif; ?>
                 </div>
 
                 <!-- Booking Summary Bar -->
                 <div style="background: #F8FAFC; border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 16px; margin: 24px 0; display: flex; justify-content: space-between; align-items: center;">
                     <div>
                         <span style="color: var(--color-muted); font-size: 13px;">Passenger Count: </span>
-                        <strong id="passengerCountDisplay">1</strong>
+                        <strong><?= $passengerCount ?></strong>
                     </div>
                     <div style="text-align: right;">
                         <span style="color: var(--color-muted); font-size: 13px;">Total Booking Fare: </span>
                         <span style="font-size: 1.4rem; font-weight: 700; color: var(--color-primary); margin-left: 8px;">
-                            ₹<span id="totalFareDisplay"><?= number_format($train['fare'], 2) ?></span>
+                            ₹<?= number_format($totalFare, 2) ?>
                         </span>
                     </div>
                 </div>
 
                 <div>
-                    <button type="submit" class="btn btn-primary btn-block" style="height: 46px; font-size: 15px;">
+                    <button type="submit" name="confirm_booking" value="1" class="btn btn-primary btn-block" style="height: 46px; font-size: 15px;">
                         Confirm and Book Ticket
                     </button>
                 </div>
             </form>
         </section>
     </main>
-
-    <script>
-        const maxCapacity = Math.min(<?= (int)$availableSeats ?>, 6);
-        const farePerPassenger = parseFloat(document.getElementById('farePerPassenger').innerText);
-        const container = document.getElementById('passengerContainer');
-        const countDisplay = document.getElementById('passengerCountDisplay');
-        const totalFareDisplay = document.getElementById('totalFareDisplay');
-        const addBtn = document.getElementById('addPassengerBtn');
-
-        function updateSummary() {
-            const rows = container.querySelectorAll('.passenger-row');
-            const count = rows.length;
-            countDisplay.innerText = count;
-            totalFareDisplay.innerText = (count * farePerPassenger).toFixed(2);
-
-            if (count >= maxCapacity) {
-                addBtn.disabled = true;
-            } else {
-                addBtn.disabled = false;
-            }
-        }
-
-        addBtn.addEventListener('click', function() {
-            const rows = container.querySelectorAll('.passenger-row');
-            const newIndex = rows.length + 1;
-            if (newIndex > maxCapacity) {
-                alert('Cannot add more passengers than available capacity (Max ' + maxCapacity + ').');
-                return;
-            }
-
-            const row = document.createElement('div');
-            row.className = 'passenger-row';
-            row.innerHTML = `
-                <div style="flex: 2;">
-                    <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Passenger ${newIndex} Full Name</label>
-                    <input type="text" name="passenger_name[]" class="form-control" placeholder="Full Name" required>
-                </div>
-                <div style="flex: 1;">
-                    <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Age</label>
-                    <input type="number" name="age[]" class="form-control" placeholder="Age" min="1" max="120" required>
-                </div>
-                <div style="flex: 1.2;">
-                    <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 4px;">Gender</label>
-                    <select name="gender[]" class="form-control" required>
-                        <option value="MALE">Male</option>
-                        <option value="FEMALE">Female</option>
-                        <option value="OTHER">Other</option>
-                    </select>
-                </div>
-                <div>
-                    <button type="button" class="btn btn-danger btn-sm remove-passenger-btn" title="Remove">&times;</button>
-                </div>
-            `;
-            container.appendChild(row);
-            updateSummary();
-        });
-
-        container.addEventListener('click', function(e) {
-            if (e.target.classList.contains('remove-passenger-btn')) {
-                const row = e.target.closest('.passenger-row');
-                if (row) {
-                    row.remove();
-                    // Re-label headers
-                    const rows = container.querySelectorAll('.passenger-row');
-                    rows.forEach((r, idx) => {
-                        const lbl = r.querySelector('label');
-                        if (lbl) lbl.innerText = `Passenger ${idx + 1} Full Name`;
-                    });
-                    updateSummary();
-                }
-            }
-        });
-    </script>
 </body>
 </html>

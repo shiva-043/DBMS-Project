@@ -30,7 +30,7 @@ $currentScript = basename($_SERVER['SCRIPT_NAME']);
                     <li><a href="<?= BASE_PATH ?>/admin/manage-bookings.php" class="<?= $currentScript === 'manage-bookings.php' ? 'active' : '' ?>">Manage Bookings</a></li>
                     <li><a href="<?= BASE_PATH ?>/admin/manage-users.php" class="<?= $currentScript === 'manage-users.php' ? 'active' : '' ?>">Manage Users</a></li>
                     <li>
-                        <a href="<?= BASE_PATH ?>/logout.php" onclick="return confirm('Are you sure you want to log out?');">
+                        <a href="<?= BASE_PATH ?>/logout.php">
                             Logout <span class="nav-user-badge">Admin</span>
                         </a>
                     </li>
@@ -41,7 +41,7 @@ $currentScript = basename($_SERVER['SCRIPT_NAME']);
                     <li><a href="<?= BASE_PATH ?>/user/my-bookings.php" class="<?= in_array($currentScript, ['my-bookings.php', 'booking-confirmation.php', 'cancellation-confirmation.php']) ? 'active' : '' ?>">My Bookings</a></li>
                     <li><a href="<?= BASE_PATH ?>/user/profile.php" class="<?= $currentScript === 'profile.php' ? 'active' : '' ?>">Profile</a></li>
                     <li>
-                        <a href="<?= BASE_PATH ?>/logout.php" onclick="return confirm('Are you sure you want to log out?');">
+                        <a href="<?= BASE_PATH ?>/logout.php">
                             Logout <span class="nav-user-badge"><?= htmlspecialchars(explode(' ', $currentUser['full_name'])[0]) ?></span>
                         </a>
                     </li>

@@ -137,10 +137,8 @@ try {
             </div>
 
             <!-- Action Buttons -->
-            <div class="no-print" style="margin-top: 24px; display: flex; gap: 12px; justify-content: flex-end;">
-                <button type="button" onclick="window.print()" class="btn btn-secondary">
-                    Print Ticket
-                </button>
+            <div class="no-print" style="margin-top: 24px; display: flex; gap: 12px; justify-content: flex-end; align-items: center;">
+                <span style="font-size: 12px; color: var(--color-muted);">To print this ticket, press Ctrl+P (or Cmd+P on Mac)</span>
                 <a href="<?= BASE_PATH ?>/user/my-bookings.php" class="btn btn-primary">
                     My Bookings
                 </a>
